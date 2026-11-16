@@ -1,0 +1,99 @@
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _llm_key(monkeypatch):
+    """Deterministic key presence for every test; missing-key tests delenv.
+    claude-code/ index calls run in processes unless a test opens workflows."""
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    monkeypatch.setenv("PAGEINDEX_CLAUDE_CODE_WORKFLOW", "0")
+
+
+@pytest.fixture(autouse=True)
+def _no_published_model_map(monkeypatch):
+    """No test downloads LiteLLM's published model map; the tests of that
+    download fake it (test_local_chat._publish)."""
+    from pageindex import utils
+    monkeypatch.setattr(utils, "_MAP_SET_BY_USER", True)
+
+
+@pytest.fixture(autouse=True)
+def _no_refusals_remembered(monkeypatch):
+    """Each test starts with no server refusal remembered for the process."""
+    from pageindex import utils
+    monkeypatch.setattr(utils, "_refusals", {})
+
+
+def exit_code_in_forked_child(check, timeout=5):
+    """``check()`` run in a forked child of this process: exit code 0 when it
+    returns true, 1 when false or raising, minus SIGALRM when it hangs."""
+    import os
+    import signal
+    import warnings
+    if not hasattr(os, "fork"):
+        pytest.skip("fork is POSIX only")
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", DeprecationWarning)  # forks a threaded process
+        pid = os.fork()
+    if pid == 0:
+        code = 1
+        try:
+            signal.alarm(timeout)
+            code = 0 if check() else 1
+        finally:
+            os._exit(code)
+    return os.waitstatus_to_exitcode(os.waitpid(pid, 0)[1])
+
+
+def build_pdf(page_texts, font="<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>"):
+    """Build a minimal, uncompressed PDF (one line per page, a page's
+    (x, y, size, text) lines, or a page's raw content stream as bytes, in
+    ``font``, Helvetica by default) whose text PyPDF2 can extract. Returns
+    the PDF file bytes."""
+    n = len(page_texts)
+    objects = []
+    kids = " ".join(f"{3 + i} 0 R" for i in range(n))
+    objects.append(b"<< /Type /Catalog /Pages 2 0 R >>")
+    objects.append(f"<< /Type /Pages /Kids [{kids}] /Count {n} >>".encode())
+    font_obj = 3 + 2 * n
+    for i in range(n):
+        objects.append(
+            f"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] "
+            f"/Resources << /Font << /F1 {font_obj} 0 R >> >> "
+            f"/Contents {3 + n + i} 0 R >>".encode()
+        )
+    for page in page_texts:
+        if isinstance(page, bytes):
+            stream = page
+        else:
+            parts = []
+            for x, y, size, text in [(72, 720, 12, page)] if isinstance(page, str) else page:
+                safe = text.replace("\\", r"\\").replace("(", r"\(").replace(")", r"\)")
+                parts.append(f"BT /F1 {size} Tf {x} {y} Td ({safe}) Tj ET")
+            stream = " ".join(parts).encode()
+        objects.append(b"<< /Length %d >>\nstream\n%s\nendstream" % (len(stream), stream))
+    objects.append(font.encode())
+
+    out = bytearray(b"%PDF-1.4\n")
+    offsets = []
+    for num, body in enumerate(objects, start=1):
+        offsets.append(len(out))
+        out += b"%d 0 obj\n" % num + body + b"\nendobj\n"
+    xref_pos = len(out)
+    out += b"xref\n0 %d\n" % (len(objects) + 1)
+    out += b"0000000000 65535 f \n"
+    for offset in offsets:
+        out += b"%010d 00000 n \n" % offset
+    out += (b"trailer\n<< /Size %d /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF\n"
+            % (len(objects) + 1, xref_pos))
+    return bytes(out)
+
+
+@pytest.fixture
+def sample_pdf(tmp_path):
+    """A 2-page PDF with known, extractable text."""
+    path = tmp_path / "sample.pdf"
+    path.write_bytes(build_pdf(["Hello page one about apples",
+                                "Second page about bananas"]))
+    return str(path)
