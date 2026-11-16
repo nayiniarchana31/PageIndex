@@ -1,54 +1,48 @@
-"""PageIndex SDK."""
-from typing import TYPE_CHECKING as _TYPE_CHECKING
+"""Keyword-labeled section and caption-region detection. This module finds blocks that look like figure/table/chart labels or named
+sections, then extends each label forward or backward to claim the associated
+body blocks. The resulting regions are used by classification and outline
+assembly to avoid treating captions or labeled content as ordinary headings.
+"""
 
-from .chat_stream import ChatStream, MessagesStream, ChatObject
-from .client import PageIndexClient, PageIndexCloudClient, PageIndexLocalClient
-from .errors import PageIndexAPIError
-from .types import (ChatConfig, ChatProcessOptions, CloudIndexConfig,
-                    IndexConfig, LocalIndexConfig)
+import regex as regex_module  # Unicode \p{...} property classes.
+from typing import Optional
 
-if _TYPE_CHECKING:
-    from .flash import page_index_flash
-    from .imaging import highlight_region
-    from .page_index_classic import page_index, page_index_main
-    from .page_index_md import md_to_tree
-    from .tree_optimize import optimize_tree
+from ..classification import FIGURE_KEYWORDS_TRIE, TABLE_KEYWORDS_TRIE, CHART_KEYWORDS_TRIE
+from ..model import (
+    Rect, rect_union, extend_top_to, extend_bottom_to, EMPTY_RECT, Bounded,
+    _trim_unicode_ws,
+    center_aligned, last_span, heading_score, reading_order_key, numbering_text, Line, last_line_of, first_span_of, dominant_style_of, info_weight, Block,
+)
+from ..stats import column_index_of
+from ..tokens import Token, TokenView, wrap_tokens, enumerate_tokens, last_token, trie_prefix_match, strip_leading_if_in, first_token, set_case_fold, TrieConfig, build_trie, tokenize_block, BuiltTrie, is_word_token
+
+from .caption_text import (
+    PERIOD_CHARS,
+    STRUCTURAL_NUMBER_RE,
+    is_number_separator,
+    extract_structural_number,
+    format_caption_label,
+    REFERENCE_PHRASE_TRIE,
+    is_uppercase_dominant,
+    trie_matches_all,
+    advance_past_line,
+    skip_bracketed_word,
+    token_case_signal,
+    caption_outranks,
+)
+from .caption_regions import (
+    CaptionedRegion,
+    dedupe_caption_entries,
+    extend_caption_region,
+    build_caption_regions,
+    CaptionEntry,
+    CaptionContext,
+    iter_page_blocks,
+    detect_captions,
+)
 
 __all__ = [
-    "PageIndexClient", "PageIndexCloudClient", "PageIndexLocalClient",
-    "PageIndexAPIError",
-    "IndexConfig", "CloudIndexConfig", "LocalIndexConfig", "ChatConfig",
-    "ChatProcessOptions", "ChatStream", "MessagesStream", "ChatObject",
-    "page_index", "page_index_main", "page_index_flash",
-    "optimize_tree", "md_to_tree", "highlight_region",
+    "PERIOD_CHARS", "STRUCTURAL_NUMBER_RE", "is_number_separator", "extract_structural_number", "format_caption_label", "REFERENCE_PHRASE_TRIE",
+    "is_uppercase_dominant", "trie_matches_all", "advance_past_line", "skip_bracketed_word", "token_case_signal", "caption_outranks",
+    "CaptionEntry", "CaptionedRegion", "CaptionContext", "iter_page_blocks", "detect_captions", "dedupe_caption_entries", "extend_caption_region", "build_caption_regions",
 ]
-
-_LAZY = {
-    "highlight_region": ".imaging",
-    "page_index_flash": ".flash",
-    "optimize_tree": ".tree_optimize",
-    "md_to_tree": ".page_index_md",
-}
-_SUBMODULES = {"agent_tools", "chat_stream", "client", "cloud_api", "errors",
-               "flash", "imaging", "integrations", "local_api", "local_chat",
-               "local_store", "mcp_bridge", "page_index_classic",
-               "page_index_md", "retry", "tree_optimize", "types", "utils"}
-
-
-def __getattr__(name):
-    if name.startswith("_"):
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-    if name in _SUBMODULES:
-        return importlib.import_module(f".{name}", __name__)
-    module = importlib.import_module(_LAZY.get(name, ".page_index_classic"), __name__)
-    try:
-        value = getattr(module, name)
-    except AttributeError:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}") from None
-    globals()[name] = value
-    return value
-
-
-def __dir__():
-    return sorted(set(globals()) | set(__all__) | _SUBMODULES)
